@@ -1,87 +1,27 @@
-import React, { useState } from 'react';
-import { useLeaveStore } from './store';
+import { useState } from 'react';
+import LeaveApp from './LeaveApp';
+import ExpenseApp from './ExpenseApp';
 
 export default function App() {
-  const { formData, updateField, resetForm } = useLeaveStore();
-  const [formStatus, setFormStatus] = useState('idle');
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setFormStatus('loading');
-    try {
-      const res = await fetch('/api/leave-requests', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(formData),
-      });
-      const data = await res.json().catch(()=>({}));
-      if (res.ok) {
-        resetForm();
-        if (data.viaModal) {
-          setFormStatus('idle');
-        } else {
-          setFormStatus(data.customMessage || 'success');
-          setTimeout(() => setFormStatus('idle'), 4000);
-        }
-      } else {
-        setFormStatus('idle');
-      }
-    } catch {
-      setFormStatus('idle');
-    }
-  };
-
-  const getButtonClass = () => {
-    if (formStatus === 'idle' || formStatus === 'loading') return 'bg-blue-600 hover:bg-blue-700 text-white';
-    return 'bg-green-600 text-white';
-  };
-
-  const getButtonText = () => {
-    if (formStatus === 'loading') return 'Submitting...';
-    if (formStatus === 'idle') return 'Submit Request';
-    if (formStatus === 'success') return '✓ Request Submitted Successfully';
-    return `✓ ${formStatus}`; 
-  };
+  const [tab, setTab] = useState<'leave' | 'expense'>('leave');
 
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col items-center py-12 px-4 font-sans">
-      <div className="w-full max-w-lg mb-8">
-        <h1 className="text-2xl font-bold text-gray-900">Workforce Portal</h1>
-        <p className="text-gray-500 text-sm">Employee Leave Management</p>
-      </div>
-      <form onSubmit={handleSubmit} className="w-full max-w-lg bg-white p-6 rounded-xl shadow border border-gray-200 space-y-5">
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Employee Name</label>
-          <input required type="text" className="w-full border border-gray-300 rounded p-2 outline-none focus:ring-2 focus:ring-blue-500" value={formData.employeeName} onChange={e => updateField('employeeName', e.target.value)} />
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Leave Type</label>
-          <select className="w-full border border-gray-300 rounded p-2 outline-none focus:ring-2 focus:ring-blue-500" value={formData.leaveType} onChange={e => updateField('leaveType', e.target.value)}>
-            <option>Sick Leave</option>
-            <option>Annual Leave</option>
-            <option>Casual Leave</option>
-            <option>Bereavement Leave</option>
-            <option>Unpaid Time Off</option>
-          </select>
-        </div>
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Start Date</label>
-            <input required type="date" className="w-full border border-gray-300 rounded p-2 outline-none focus:ring-2 focus:ring-blue-500" value={formData.startDate} onChange={e => updateField('startDate', e.target.value)} />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">End Date</label>
-            <input required type="date" className="w-full border border-gray-300 rounded p-2 outline-none focus:ring-2 focus:ring-blue-500" value={formData.endDate} onChange={e => updateField('endDate', e.target.value)} />
-          </div>
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Reason for Leave</label>
-          <textarea required rows={3} className="w-full border border-gray-300 rounded p-2 outline-none focus:ring-2 focus:ring-blue-500" placeholder="Please provide a brief reason..." value={formData.reason} onChange={e => updateField('reason', e.target.value)}></textarea>
-        </div>
-        <button type="submit" disabled={formStatus !== 'idle'} className={`w-full font-medium p-2 rounded transition-colors disabled:opacity-80 ${getButtonClass()}`}>
-          {getButtonText()}
+      <div className="w-full max-w-lg mb-6 flex gap-2 bg-gray-200 p-1 rounded-lg">
+        <button
+          onClick={() => setTab('leave')}
+          className={`flex-1 py-2 rounded-md text-sm font-medium transition-colors ${tab === 'leave' ? 'bg-white shadow text-gray-900' : 'text-gray-500'}`}
+        >
+          Leave Module
         </button>
-      </form>
+        <button
+          onClick={() => setTab('expense')}
+          className={`flex-1 py-2 rounded-md text-sm font-medium transition-colors ${tab === 'expense' ? 'bg-white shadow text-gray-900' : 'text-gray-500'}`}
+        >
+          Expense Module
+        </button>
+      </div>
+      {tab === 'leave' ? <LeaveApp /> : <ExpenseApp />}
     </div>
   );
 }

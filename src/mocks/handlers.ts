@@ -4,7 +4,7 @@ import type { LeaveFormData } from '../store';
 const errors = [500, 503, 504];
 let counter = 0;
 
-export const handlers = [
+export const leaveHandlers = [
   http.post('/api/leave-requests', async ({ request }) => {
     await delay(1200);
     const payload = await request.clone().json().catch(() => ({})) as Partial<LeaveFormData>;

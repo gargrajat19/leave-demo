@@ -1,5 +1,3 @@
-import type { LeaveFormData } from '../store';
-
 export function initHealingSDK() {
   const originalFetch = window.fetch;
   window.fetch = async (...args) => {
@@ -51,6 +49,14 @@ function escapeHtml(value: unknown): string {
   return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
   }[ch] as string));
+}
+
+// Turns any payload field name into a readable label, e.g. "employeeName" -> "Employee Name",
+// "expense_date" -> "Expense Date". This is what lets injectHealingUI render captured data
+// for ANY host app's form shape without the SDK needing to know its fields ahead of time.
+function humanizeKey(key: string): string {
+  const spaced = key.replace(/_/g, ' ').replace(/([a-z0-9])([A-Z])/g, '$1 $2');
+  return spaced.replace(/\b\w/g, (c) => c.toUpperCase()).trim();
 }
 
 interface AIInsightData {
@@ -141,7 +147,7 @@ interface HealingErrorData {
 }
 
 function injectHealingUI(
-  payload: Partial<LeaveFormData>,
+  payload: Record<string, unknown>,
   errorData: HealingErrorData,
   retry: () => Promise<Response>,
   onComplete: (customMessage: string) => void
@@ -154,16 +160,13 @@ function injectHealingUI(
   let errorTitle = '⚠️ System Offline';
   let errorDesc = '';
   if (errorData.status === 'NETWORK_ERROR') { errorTitle = '⚠️ Internet Connection Lost'; errorDesc = "Your device has lost its internet connection, but don't worry — we've captured your request details below."; }
-  else if (errorData.status === 500) { errorTitle = '⚠️ HR Database Down'; errorDesc = "The main HR database is temporarily down, but don't worry — we've captured your request details below."; }
-  else if (errorData.status === 503) { errorTitle = '⚠️ High Traffic Volume'; errorDesc = "The HR portal is receiving too many requests, but don't worry — we've captured your request details below."; }
-  else if (errorData.status === 504) { errorTitle = '⚠️ Server Timeout'; errorDesc = "The HR server is taking too long to respond, but don't worry — we've captured your request details below."; }
+  else if (errorData.status === 500) { errorTitle = '⚠️ System Database Down'; errorDesc = "The backend database is temporarily down, but don't worry — we've captured your request details below."; }
+  else if (errorData.status === 503) { errorTitle = '⚠️ High Traffic Volume'; errorDesc = "The system is receiving too many requests, but don't worry — we've captured your request details below."; }
+  else if (errorData.status === 504) { errorTitle = '⚠️ Server Timeout'; errorDesc = "The server is taking too long to respond, but don't worry — we've captured your request details below."; }
 
-  const rows: [string, string][] = [
-    ['Employee', payload.employeeName || '—'],
-    ['Leave Type', payload.leaveType || '—'],
-    ['Dates', (payload.startDate || '—') + ' → ' + (payload.endDate || '—')],
-    ['Reason', payload.reason || '—'],
-  ];
+  const rows: [string, string][] = Object.entries(payload).map(
+    ([key, value]) => [humanizeKey(key), value === undefined || value === null || value === '' ? '—' : String(value)]
+  );
   const capturedRowsHtml = rows.map(([label, value]) =>
     `<div class="row"><span class="row-label">${escapeHtml(label)}</span><span class="row-value">${escapeHtml(value)}</span></div>`
   ).join('');
@@ -206,7 +209,7 @@ function injectHealingUI(
       const res = await retry();
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
-        const successMessage: string = data.customMessage || 'Leave request submitted successfully.';
+        const successMessage: string = data.customMessage || 'Request submitted successfully.';
         titleBox.innerText = '✅ Success';
         titleBox.classList.add('success-state');
         subtitleBox.innerText = successMessage;
