@@ -16,9 +16,13 @@ export default function App() {
       });
       const data = await res.json().catch(()=>({}));
       if (res.ok) {
-        setFormStatus(data.customMessage || 'success');
         resetForm();
-        setTimeout(() => setFormStatus('idle'), 4000);
+        if (data.viaModal) {
+          setFormStatus('idle');
+        } else {
+          setFormStatus(data.customMessage || 'success');
+          setTimeout(() => setFormStatus('idle'), 4000);
+        }
       } else {
         setFormStatus('idle');
       }

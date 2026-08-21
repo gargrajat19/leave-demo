@@ -13,7 +13,7 @@ export function initHealingSDK() {
         if (errorBody.type === 'AI_INSIGHT') {
            return new Promise((resolve) => {
                injectAIInsightUI(payload, errorBody, (successMessage) => {
-                   resolve(new Response(JSON.stringify({ customMessage: successMessage }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+                   resolve(new Response(JSON.stringify({ customMessage: successMessage, viaModal: true }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
                });
            });
         }
@@ -22,7 +22,7 @@ export function initHealingSDK() {
         const retry = () => retryRequest(originalFetch, request);
         return new Promise((resolve) => {
             injectHealingUI(payload, { status: response.status, text: response.statusText }, retry, (customMessage) => {
-                resolve(new Response(JSON.stringify({ customMessage }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+                resolve(new Response(JSON.stringify({ customMessage, viaModal: true }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
             });
         });
       }
@@ -33,7 +33,7 @@ export function initHealingSDK() {
       const retry = () => retryRequest(originalFetch, request);
       return new Promise((resolve) => {
           injectHealingUI(payload, { status: 'NETWORK_ERROR', text: 'Connection Lost' }, retry, (customMessage) => {
-              resolve(new Response(JSON.stringify({ customMessage }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+              resolve(new Response(JSON.stringify({ customMessage, viaModal: true }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
           });
       });
     }
