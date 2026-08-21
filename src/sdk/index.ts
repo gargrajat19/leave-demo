@@ -10,8 +10,8 @@ export function initHealingSDK() {
         const errorBody = await response.clone().json().catch(()=>({}));
         if (errorBody.type === 'AI_INSIGHT') {
            return new Promise((resolve) => {
-               injectAIInsightUI(payload, errorBody, (successMessage) => {
-                   resolve(new Response(JSON.stringify({ customMessage: successMessage, viaModal: true }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+               injectAIInsightUI(payload, errorBody, (successMessage, finalized = true) => {
+                   resolve(new Response(JSON.stringify({ customMessage: successMessage, viaModal: true, finalized }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
                });
            });
         }
@@ -65,9 +65,10 @@ interface AIInsightData {
   message: string;
   action: string;
   successMessage: string;
+  finalized?: boolean; // false = backend wants the user to review/resubmit rather than treating this as done
 }
 
-function injectAIInsightUI(_payload: unknown, insightData: AIInsightData, onComplete: (successMessage: string) => void) {
+function injectAIInsightUI(_payload: unknown, insightData: AIInsightData, onComplete: (successMessage: string, finalized?: boolean) => void) {
   if (document.getElementById('sdk-overlay')) return;
   const host = document.createElement('div');
   host.id = 'sdk-overlay';
@@ -117,7 +118,7 @@ function injectAIInsightUI(_payload: unknown, insightData: AIInsightData, onComp
 
   ignoreBtn.addEventListener('click', () => {
     host.remove();
-    onComplete('Request Approved Normally');
+    onComplete('Request Approved Normally', true);
   });
 
   actionBtn.addEventListener('click', async () => {
@@ -136,7 +137,7 @@ function injectAIInsightUI(_payload: unknown, insightData: AIInsightData, onComp
 
     actionBtn.addEventListener('click', () => {
       host.remove();
-      onComplete(insightData.successMessage);
+      onComplete(insightData.successMessage, insightData.finalized !== false);
     }, { once: true });
   }, { once: true });
 }

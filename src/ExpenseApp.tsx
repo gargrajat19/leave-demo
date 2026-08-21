@@ -16,7 +16,8 @@ export default function ExpenseApp() {
       });
       const data = await res.json().catch(()=>({}));
       if (res.ok) {
-        resetForm();
+        const shouldReset = data.finalized !== false;
+        if (shouldReset) resetForm();
         if (data.viaModal) {
           setFormStatus('idle');
         } else {

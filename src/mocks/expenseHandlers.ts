@@ -3,6 +3,7 @@ import type { ExpenseFormData } from '../expenseStore';
 
 const errors = [500, 503, 504];
 let counter = 0;
+const duplicateAttempts = new Map<string, number>();
 
 export const expenseHandlers = [
   http.post('/api/expense-requests', async ({ request }) => {
@@ -16,15 +17,33 @@ export const expenseHandlers = [
       return HttpResponse.json({ customMessage: 'Expense claim submitted successfully.' }, { status: 200 });
     }
 
-    // Use case 1: duplicate-submission detection (anomaly)
+    // Use case 1: duplicate-submission detection.
+    // 1st submission of this vendor: send it back to the employee to double-check and resubmit.
+    // 2nd submission of the same vendor: treat the duplicate as confirmed and auto-flag to Finance.
     if (vendor.includes('uber')) {
+      const key = `${(payload.employeeName || '').toLowerCase()}|${vendor}`;
+      const attempt = (duplicateAttempts.get(key) || 0) + 1;
+      duplicateAttempts.set(key, attempt);
+
+      if (attempt === 1) {
+        return HttpResponse.json({
+          type: 'AI_INSIGHT',
+          category: 'ANOMALY',
+          title: 'Possible Duplicate Expense',
+          message: `We found a similar Uber expense submitted earlier this week for ${payload.employeeName || 'this employee'}. Please double-check your records — if this is a genuine, separate expense, simply resubmit the claim as-is.`,
+          action: 'Acknowledge & Review',
+          successMessage: "Thanks — please double-check this expense and resubmit if it isn't a duplicate.",
+          finalized: false,
+        }, { status: 400 });
+      }
+
       return HttpResponse.json({
         type: 'AI_INSIGHT',
         category: 'ANOMALY',
-        title: 'Possible Duplicate Expense',
-        message: `We found a similar Uber expense submitted earlier this week for ${payload.employeeName || 'this employee'}. This may be a duplicate submission rather than a new trip.`,
-        action: 'Flag as Duplicate & Notify Finance',
-        successMessage: 'Finance team notified; expense flagged for review before reimbursement.',
+        title: 'Duplicate Confirmed — Flagged to Finance',
+        message: `This Uber expense has now been submitted twice by ${payload.employeeName || 'this employee'} and still appears to be a duplicate. It has been automatically flagged for Finance review.`,
+        action: 'Acknowledge',
+        successMessage: 'Finance team notified; expense flagged for review.',
       }, { status: 400 });
     }
 
