@@ -1,7 +1,5 @@
 import type { LeaveFormData } from '../store';
 
-import type { LeaveFormData } from '../store';
-
 export function initHealingSDK() {
   const originalFetch = window.fetch;
   window.fetch = async (...args) => {
@@ -53,25 +51,6 @@ function escapeHtml(value: unknown): string {
   return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
   }[ch] as string));
-}
-      if (!response.ok && response.status >= 500) {
-        return new Promise((resolve) => {
-            injectHealingUI(payload, { status: response.status, text: response.statusText }, () => {
-                resolve(new Response(JSON.stringify({ customMessage: 'Request safely cached offline' }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
-            });
-        });
-      }
-      return response;
-    } catch {
-      const request = args[0] instanceof Request ? args[0] : new Request(args[0], args[1]);
-      const payload = await request.clone().json().catch(() => ({ }));
-      return new Promise((resolve) => {
-          injectHealingUI(payload, { status: 'NETWORK_ERROR', text: 'Connection Lost' }, () => {
-              resolve(new Response(JSON.stringify({ customMessage: 'Request safely cached offline' }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
-          });
-      });
-    }
-  };
 }
 
 interface AIInsightData {
@@ -139,16 +118,16 @@ function injectAIInsightUI(_payload: unknown, insightData: AIInsightData, onComp
     actionBtn.disabled = true;
     ignoreBtn.style.display = 'none';
     actionBtn.innerText = 'Processing...';
-    
+
     await new Promise(r => setTimeout(r, 1200));
-    
+
     actionBtn.disabled = false;
     titleBox.innerText = '✅ Action Completed';
     titleBox.classList.add('success-state');
     contentBox.innerText = insightData.successMessage;
     actionBtn.innerText = 'Close';
     actionBtn.style.background = '#16a34a';
-    
+
     actionBtn.addEventListener('click', () => {
       host.remove();
       onComplete(insightData.successMessage);
