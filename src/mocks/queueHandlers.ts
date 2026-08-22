@@ -3,22 +3,21 @@ import type { LeaveFormData } from '../store';
 import type { ExpenseFormData } from '../expenseStore';
 import { addToQueue, resolveItem, nextId, resetDb, queue, type ItemStatus } from './db';
 import { computeLeaveInsight, computeExpenseInsight } from './insights';
+import { validateLeave, validateExpense } from './validation';
 
-const failureStatuses = [500, 503, 504];
+type TechnicalOutcome = 'NETWORK_ERROR' | 500 | 503 | 504 | null;
 
-// Fails roughly 1 in 3 submissions (cycling through 500/503/504) so the healing/retry flow is
-// reliably demoable, while most submissions succeed and actually land in the manager's queue.
+// Deterministic rotation — NOT random — so every submission reliably demonstrates a distinct
+// scenario: network error, db down, high traffic, timeout, then success, then repeats. This is
+// separate from data-discrepancy validation below, which is real and doesn't consume a rotation slot.
+const TECHNICAL_OUTCOMES: TechnicalOutcome[] = ['NETWORK_ERROR', 500, 503, 504, null];
+
 function makeOutcomeCounter() {
   let n = 0;
-  let failN = 0;
-  return function next(): number | null {
+  return function next(): TechnicalOutcome {
+    const outcome = TECHNICAL_OUTCOMES[n % TECHNICAL_OUTCOMES.length];
     n++;
-    if (n % 3 === 0) {
-      const status = failureStatuses[failN % failureStatuses.length];
-      failN++;
-      return status;
-    }
-    return null;
+    return outcome;
   };
 }
 
@@ -30,9 +29,16 @@ let nextExpenseOutcome = makeOutcomeCounter();
 // through but mark it for the manager as a plain flag, not a reasoning-based insight.
 let duplicateAttempts = new Map<string, number>();
 
+function technicalFailureResponse(outcome: TechnicalOutcome) {
+  if (outcome === 'NETWORK_ERROR') return HttpResponse.error();
+  return new HttpResponse(null, { status: outcome as number });
+}
+
 export const queueHandlers = [
-  // Employee-facing: submit a leave request. The only thing this endpoint decides for itself
-  // is a technical failure (db/network down) — no business insight happens here anymore.
+  // Employee-facing: submit a leave request.
+  // Order: (1) real data validation — always evaluated, never skipped by rotation;
+  //        (2) technical-failure simulation — deterministic rotation;
+  //        (3) success — added to the manager's queue.
   http.post('/api/leave-requests', async ({ request }) => {
     await delay(1200);
     const payload = (await request.clone().json().catch(() => ({}))) as Partial<LeaveFormData>;
@@ -42,13 +48,18 @@ export const queueHandlers = [
       return HttpResponse.json({ customMessage: 'Leave request submitted for approval.' }, { status: 200 });
     }
 
+    const validation = validateLeave(payload);
+    if (!validation.ok) {
+      return HttpResponse.json({ discrepancy: true, customMessage: validation.message, fields: validation.fields }, { status: 422 });
+    }
+
     if (payload.leaveType === 'Casual Leave') {
       return HttpResponse.json({ customMessage: 'Casual Leave Approved' }, { status: 200 });
     }
 
-    const failStatus = nextLeaveOutcome();
-    if (failStatus) {
-      return new HttpResponse(null, { status: failStatus });
+    const outcome = nextLeaveOutcome();
+    if (outcome !== null) {
+      return technicalFailureResponse(outcome);
     }
 
     addToQueue({
@@ -66,7 +77,7 @@ export const queueHandlers = [
     return HttpResponse.json({ customMessage: 'Leave request submitted for approval.' }, { status: 200 });
   }),
 
-  // Employee-facing: submit an expense claim.
+  // Employee-facing: submit an expense claim. Same ordering principle as leave above.
   http.post('/api/expense-requests', async ({ request }) => {
     await delay(1200);
     const payload = (await request.clone().json().catch(() => ({}))) as Partial<ExpenseFormData>;
@@ -76,9 +87,14 @@ export const queueHandlers = [
       return HttpResponse.json({ customMessage: 'Expense claim submitted for approval.' }, { status: 200 });
     }
 
-    const failStatus = nextExpenseOutcome();
-    if (failStatus) {
-      return new HttpResponse(null, { status: failStatus });
+    const validation = validateExpense(payload);
+    if (!validation.ok) {
+      return HttpResponse.json({ discrepancy: true, customMessage: validation.message, fields: validation.fields }, { status: 422 });
+    }
+
+    const outcome = nextExpenseOutcome();
+    if (outcome !== null) {
+      return technicalFailureResponse(outcome);
     }
 
     const vendor = payload.vendor || '';
@@ -140,8 +156,8 @@ export const queueHandlers = [
     return HttpResponse.json({ ok: true });
   }),
 
-  // Demo utility: restore the queue/history back to seeded data, and clear the duplicate-attempt
-  // and simulated-outage counters, so testing doesn't require re-entering data by hand.
+  // Demo utility: restore the queue/history back to seeded data, and reset the duplicate-attempt
+  // and outcome-rotation counters, so every reset gives a clean, repeatable demo run.
   http.post('/api/queue/reset', async () => {
     await delay(200);
     resetDb();
