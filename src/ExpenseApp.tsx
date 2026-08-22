@@ -4,10 +4,12 @@ import { useExpenseStore } from './expenseStore';
 export default function ExpenseApp() {
   const { formData, updateField, resetForm } = useExpenseStore();
   const [formStatus, setFormStatus] = useState('idle');
+  const [duplicateWarning, setDuplicateWarning] = useState<string | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormStatus('loading');
+    setDuplicateWarning(null);
     try {
       const res = await fetch('/api/expense-requests', {
         method: 'POST',
@@ -24,6 +26,9 @@ export default function ExpenseApp() {
           setFormStatus(data.customMessage || 'success');
           setTimeout(() => setFormStatus('idle'), 4000);
         }
+      } else if (res.status === 409 && data.duplicate) {
+        setDuplicateWarning(data.customMessage || 'This looks like a duplicate. Please review and resubmit.');
+        setFormStatus('idle');
       } else {
         setFormStatus('idle');
       }
@@ -51,6 +56,11 @@ export default function ExpenseApp() {
         <p className="text-gray-500 text-sm">Employee Expense Claims</p>
       </div>
       <form onSubmit={handleSubmit} className="w-full bg-white p-6 rounded-xl shadow border border-gray-200 space-y-5">
+        {duplicateWarning && (
+          <div className="p-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 text-sm">
+            ⚠️ {duplicateWarning}
+          </div>
+        )}
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Employee Name</label>
           <input required type="text" className="w-full border border-gray-300 rounded p-2 outline-none focus:ring-2 focus:ring-blue-500" value={formData.employeeName} onChange={e => updateField('employeeName', e.target.value)} />

@@ -1,7 +1,7 @@
 import { http, HttpResponse, delay } from 'msw';
 import type { LeaveFormData } from '../store';
 import type { ExpenseFormData } from '../expenseStore';
-import { queue, addToQueue, resolveItem, nextId, type ItemStatus } from './db';
+import { addToQueue, resolveItem, nextId, resetDb, queue, type ItemStatus } from './db';
 import { computeLeaveInsight, computeExpenseInsight } from './insights';
 
 const failureStatuses = [500, 503, 504];
@@ -22,8 +22,13 @@ function makeOutcomeCounter() {
   };
 }
 
-const nextLeaveOutcome = makeOutcomeCounter();
-const nextExpenseOutcome = makeOutcomeCounter();
+let nextLeaveOutcome = makeOutcomeCounter();
+let nextExpenseOutcome = makeOutcomeCounter();
+
+// Plain business-rule duplicate check (NOT an AI insight) — same employee submitting the same
+// vendor again. 1st repeat: bounce back to the employee to double-check. 2nd repeat: let it
+// through but mark it for the manager as a plain flag, not a reasoning-based insight.
+let duplicateAttempts = new Map<string, number>();
 
 export const queueHandlers = [
   // Employee-facing: submit a leave request. The only thing this endpoint decides for itself
@@ -61,7 +66,7 @@ export const queueHandlers = [
     return HttpResponse.json({ customMessage: 'Leave request submitted for approval.' }, { status: 200 });
   }),
 
-  // Employee-facing: submit an expense claim. Same principle — only technical failures here.
+  // Employee-facing: submit an expense claim.
   http.post('/api/expense-requests', async ({ request }) => {
     await delay(1200);
     const payload = (await request.clone().json().catch(() => ({}))) as Partial<ExpenseFormData>;
@@ -76,20 +81,41 @@ export const queueHandlers = [
       return new HttpResponse(null, { status: failStatus });
     }
 
+    const vendor = payload.vendor || '';
+    let duplicateFlag = false;
+    if (vendor) {
+      const key = `${(payload.employeeName || '').toLowerCase()}|${vendor.toLowerCase()}`;
+      const attempt = (duplicateAttempts.get(key) || 0) + 1;
+      duplicateAttempts.set(key, attempt);
+
+      if (attempt === 2) {
+        return HttpResponse.json({
+          duplicate: true,
+          customMessage: `This looks like a duplicate of a ${vendor} expense you already submitted recently. Please double-check your records and resubmit if this is a genuine, separate expense.`,
+        }, { status: 409 });
+      }
+      duplicateFlag = attempt >= 3;
+    }
+
     addToQueue({
       id: nextId(),
       kind: 'expense',
       employeeName: payload.employeeName || 'Unknown',
-      vendor: payload.vendor || '',
+      vendor,
       category: payload.category || '',
       amount: Number(payload.amount) || 0,
       expenseDate: payload.expenseDate || '',
       description: payload.description || '',
       status: 'pending',
       submittedAt: new Date().toISOString(),
+      duplicateFlag,
     });
 
-    return HttpResponse.json({ customMessage: 'Expense claim submitted for approval.' }, { status: 200 });
+    return HttpResponse.json({
+      customMessage: duplicateFlag
+        ? 'Expense claim submitted for approval — flagged for review due to repeated similar claims.'
+        : 'Expense claim submitted for approval.',
+    }, { status: 200 });
   }),
 
   // Manager-facing: the pending queue, each item annotated with whatever insight applies.
@@ -111,6 +137,17 @@ export const queueHandlers = [
     if (!resolved) {
       return HttpResponse.json({ error: 'Item not found' }, { status: 404 });
     }
+    return HttpResponse.json({ ok: true });
+  }),
+
+  // Demo utility: restore the queue/history back to seeded data, and clear the duplicate-attempt
+  // and simulated-outage counters, so testing doesn't require re-entering data by hand.
+  http.post('/api/queue/reset', async () => {
+    await delay(200);
+    resetDb();
+    duplicateAttempts = new Map<string, number>();
+    nextLeaveOutcome = makeOutcomeCounter();
+    nextExpenseOutcome = makeOutcomeCounter();
     return HttpResponse.json({ ok: true });
   }),
 ];

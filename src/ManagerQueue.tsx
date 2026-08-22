@@ -28,6 +28,7 @@ interface BaseItem {
   expenseDate?: string;
   description?: string;
   isLateNight?: boolean;
+  duplicateFlag?: boolean;
 }
 
 function summaryFor(item: BaseItem): string {
@@ -85,6 +86,13 @@ export default function ManagerQueue() {
     })();
   }, []);
 
+  const resetDemoData = async () => {
+    setSelectedId(null);
+    setManualMode(false);
+    await fetch('/api/queue/reset', { method: 'POST' });
+    await loadQueue();
+  };
+
   const selected = items.find((i) => i.id === selectedId) || null;
 
   const resolve = async (status: 'approved' | 'rejected' | 'flagged') => {
@@ -111,9 +119,14 @@ export default function ManagerQueue() {
           <h1 className="text-2xl font-bold text-gray-900">Manager Approval Queue</h1>
           <p className="text-gray-500 text-sm">Review pending requests — AI Manager Co-Pilot surfaces context where it applies.</p>
         </div>
-        <button onClick={loadQueue} className="text-sm px-3 py-1.5 rounded border border-gray-300 text-gray-600 hover:bg-gray-100">
-          Refresh Queue
-        </button>
+        <div className="flex gap-2">
+          <button onClick={loadQueue} className="text-sm px-3 py-1.5 rounded border border-gray-300 text-gray-600 hover:bg-gray-100">
+            Refresh Queue
+          </button>
+          <button onClick={resetDemoData} className="text-sm px-3 py-1.5 rounded border border-gray-300 text-gray-600 hover:bg-gray-100">
+            Reset Demo Data
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-5 gap-4">
@@ -131,7 +144,10 @@ export default function ManagerQueue() {
               >
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-semibold uppercase tracking-wide text-gray-400">{item.kind}</span>
-                  {item.insight && <span className="text-xs font-medium text-orange-600">⚡ Insight</span>}
+                  <span className="flex gap-2">
+                    {item.duplicateFlag && <span className="text-xs font-medium text-red-600">⚠ Duplicate</span>}
+                    {item.insight && <span className="text-xs font-medium text-orange-600">⚡ Insight</span>}
+                  </span>
                 </div>
                 <div className="font-medium text-gray-900 mt-0.5">{item.employeeName}</div>
                 <div className="text-sm text-gray-500">{summaryFor(item)}</div>
@@ -156,6 +172,12 @@ export default function ManagerQueue() {
                   ))}
                 </div>
               </div>
+
+              {selected.duplicateFlag && (
+                <div className="mb-4 p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-sm">
+                  ⚠ Flagged by a business rule: this employee has submitted this vendor multiple times recently.
+                </div>
+              )}
 
               {selected.insight && !manualMode ? (
                 <div className={`rounded-lg p-4 border ${selected.insight.category === 'WELLBEING_RISK' ? 'bg-purple-50 border-purple-200' : 'bg-orange-50 border-orange-200'}`}>
