@@ -1,38 +1,37 @@
+// Self-healing SDK: intercepts fetch() failures (5xx / network-down) at the point of
+// submission and offers a capture-and-retry recovery UI, so a transient backend/network
+// issue doesn't lose what the user was trying to submit.
+//
+// Deliberately out of scope for this SDK: business decisions like "does this look
+// suspicious" or "does this need manager review." Those are judgment calls that belong to
+// whichever screen actually makes that decision (e.g. a manager's approval queue) — the SDK
+// only ever sees a single in-flight request and has no way to reason about a user's history,
+// so baking that logic in here would be the wrong place to put it.
+
 export function initHealingSDK() {
   const originalFetch = window.fetch;
   window.fetch = async (...args) => {
     try {
       const response = await originalFetch(...args);
-      const request = args[0] instanceof Request ? args[0] : new Request(args[0], args[1]);
-      const payload = await request.clone().json().catch(() => ({}));
-
-      if (response.status === 400) {
-        const errorBody = await response.clone().json().catch(()=>({}));
-        if (errorBody.type === 'AI_INSIGHT') {
-           return new Promise((resolve) => {
-               injectAIInsightUI(payload, errorBody, (successMessage, finalized = true) => {
-                   resolve(new Response(JSON.stringify({ customMessage: successMessage, viaModal: true, finalized }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
-               });
-           });
-        }
-      }
       if (!response.ok && response.status >= 500) {
+        const request = args[0] instanceof Request ? args[0] : new Request(args[0], args[1]);
+        const payload = await request.clone().json().catch(() => ({}));
         const retry = () => retryRequest(originalFetch, request);
         return new Promise((resolve) => {
-            injectHealingUI(payload, { status: response.status, text: response.statusText }, retry, (customMessage) => {
-                resolve(new Response(JSON.stringify({ customMessage, viaModal: true }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
-            });
+          injectHealingUI(payload, { status: response.status, text: response.statusText }, retry, (customMessage) => {
+            resolve(new Response(JSON.stringify({ customMessage, viaModal: true }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+          });
         });
       }
       return response;
     } catch {
       const request = args[0] instanceof Request ? args[0] : new Request(args[0], args[1]);
-      const payload = await request.clone().json().catch(() => ({ }));
+      const payload = await request.clone().json().catch(() => ({}));
       const retry = () => retryRequest(originalFetch, request);
       return new Promise((resolve) => {
-          injectHealingUI(payload, { status: 'NETWORK_ERROR', text: 'Connection Lost' }, retry, (customMessage) => {
-              resolve(new Response(JSON.stringify({ customMessage, viaModal: true }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
-          });
+        injectHealingUI(payload, { status: 'NETWORK_ERROR', text: 'Connection Lost' }, retry, (customMessage) => {
+          resolve(new Response(JSON.stringify({ customMessage, viaModal: true }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        });
       });
     }
   };
@@ -51,95 +50,12 @@ function escapeHtml(value: unknown): string {
   }[ch] as string));
 }
 
-// Turns any payload field name into a readable label, e.g. "employeeName" -> "Employee Name",
-// "expense_date" -> "Expense Date". This is what lets injectHealingUI render captured data
-// for ANY host app's form shape without the SDK needing to know its fields ahead of time.
+// Turns any payload field name into a readable label, e.g. "employeeName" -> "Employee Name".
+// This is what lets injectHealingUI render captured data for ANY host app's form shape
+// without the SDK needing to know its fields ahead of time.
 function humanizeKey(key: string): string {
   const spaced = key.replace(/_/g, ' ').replace(/([a-z0-9])([A-Z])/g, '$1 $2');
   return spaced.replace(/\b\w/g, (c) => c.toUpperCase()).trim();
-}
-
-interface AIInsightData {
-  category: string;
-  title: string;
-  message: string;
-  action: string;
-  successMessage: string;
-  finalized?: boolean; // false = backend wants the user to review/resubmit rather than treating this as done
-}
-
-function injectAIInsightUI(_payload: unknown, insightData: AIInsightData, onComplete: (successMessage: string, finalized?: boolean) => void) {
-  if (document.getElementById('sdk-overlay')) return;
-  const host = document.createElement('div');
-  host.id = 'sdk-overlay';
-  Object.assign(host.style, { position: 'fixed', top: '0', left: '0', width: '100vw', height: '100vh', zIndex: '9999', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(2px)' });
-  const shadowRoot = host.attachShadow({ mode: 'open' });
-  const isAnomaly = insightData.category === 'ANOMALY';
-  const themeColor = isAnomaly ? '#f97316' : '#8b5cf6';
-  shadowRoot.innerHTML = `
-    <style>
-      .modal { background: white; padding: 32px; border-radius: 12px; width: 450px; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.1), 0 10px 10px -5px rgba(0,0,0,0.04); font-family: sans-serif; }
-      .header { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
-      .icon { background: ${themeColor}15; color: ${themeColor}; padding: 8px; border-radius: 8px; font-size: 20px; }
-      .title-box { display: flex; flex-direction: column; }
-      .supertitle { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: ${themeColor}; font-weight: bold; }
-      .title { color: #111827; font-size: 18px; font-weight: 700; }
-      .content { color: #4b5563; font-size: 14px; line-height: 1.6; margin-bottom: 24px; padding: 12px; border-left: 4px solid ${themeColor}; background: #f9fafb; border-radius: 0 8px 8px 0; }
-      .actions { display: flex; gap: 10px; }
-      .btn { flex: 1; padding: 12px; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 14px; transition: all 0.2s; text-align: center; border: none; }
-      .btn-primary { background: ${themeColor}; color: white; }
-      .btn-primary:hover { filter: brightness(0.9); }
-      .btn-secondary { background: transparent; color: #475569; border: 1px solid #cbd5e1; }
-      .btn-secondary:hover { background: #f1f5f9; }
-      .success-state { color: #16a34a !important; }
-    </style>
-    <div class="modal">
-      <div class="header">
-        <div class="icon">${isAnomaly ? '🚩' : '💡'}</div>
-        <div class="title-box">
-          <div class="supertitle">AI Manager Co-Pilot</div>
-          <div class="title" id="m-title">${insightData.title}</div>
-        </div>
-      </div>
-      <div class="content" id="m-content">${insightData.message}</div>
-      <div class="actions">
-        <button class="btn btn-secondary" id="ignore-btn">Ignore & Approve</button>
-        <button class="btn btn-primary" id="action-btn">${insightData.action}</button>
-      </div>
-    </div>
-  `;
-  document.body.appendChild(host);
-  const ignoreBtn = shadowRoot.getElementById('ignore-btn') as HTMLButtonElement | null;
-  const actionBtn = shadowRoot.getElementById('action-btn') as HTMLButtonElement | null;
-  const titleBox = shadowRoot.getElementById('m-title') as HTMLElement | null;
-  const contentBox = shadowRoot.getElementById('m-content') as HTMLElement | null;
-
-  if (!ignoreBtn || !actionBtn || !titleBox || !contentBox) return;
-
-  ignoreBtn.addEventListener('click', () => {
-    host.remove();
-    onComplete('Request Approved Normally', true);
-  });
-
-  actionBtn.addEventListener('click', async () => {
-    actionBtn.disabled = true;
-    ignoreBtn.style.display = 'none';
-    actionBtn.innerText = 'Processing...';
-
-    await new Promise(r => setTimeout(r, 1200));
-
-    actionBtn.disabled = false;
-    titleBox.innerText = '✅ Action Completed';
-    titleBox.classList.add('success-state');
-    contentBox.innerText = insightData.successMessage;
-    actionBtn.innerText = 'Close';
-    actionBtn.style.background = '#16a34a';
-
-    actionBtn.addEventListener('click', () => {
-      host.remove();
-      onComplete(insightData.successMessage, insightData.finalized !== false);
-    }, { once: true });
-  }, { once: true });
 }
 
 interface HealingErrorData {

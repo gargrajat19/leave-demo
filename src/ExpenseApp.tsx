@@ -87,7 +87,7 @@ export default function ExpenseApp() {
           {getButtonText()}
         </button>
       </form>
-      <p className="text-xs text-gray-400 mt-4">Try vendor "Uber" for a duplicate-detection insight, an amount over ₹50,000 for a budget-approval insight, or anything else for a simulated backend failure + retry.</p>
+      <p className="text-xs text-gray-400 mt-4">Claims go to the Manager Queue for review. About 1 in 3 submissions simulates a backend outage — you'll get an option to retry without losing what you entered.</p>
     </div>
   );
 }

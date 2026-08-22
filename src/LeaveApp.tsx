@@ -82,7 +82,7 @@ export default function LeaveApp() {
           {getButtonText()}
         </button>
       </form>
-      <p className="text-xs text-gray-400 mt-4">Try "Alex" or "Sarah" for an AI Insight, or any other name for a simulated backend failure + retry.</p>
+      <p className="text-xs text-gray-400 mt-4">Submissions go to the Manager Queue for review. About 1 in 3 submissions simulates a backend outage — you'll get an option to retry without losing what you entered.</p>
     </div>
   );
 }
