@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useExpenseStore } from './expenseStore';
+import { reportTelemetry } from './sdk';
 
 export default function ExpenseApp() {
   const { formData, updateField, resetForm } = useExpenseStore();
@@ -20,6 +21,7 @@ export default function ExpenseApp() {
       });
       const data = await res.json().catch(()=>({}));
       if (res.ok) {
+        reportTelemetry({ module: 'expense', employeeName: formData.employeeName, context: `${formData.category} - ${formData.vendor} (₹${formData.amount})`, date: formData.expenseDate });
         const shouldReset = data.finalized !== false;
         if (shouldReset) resetForm();
         if (data.viaModal) {

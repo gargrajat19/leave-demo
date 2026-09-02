@@ -2,9 +2,10 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
 import './index.css';
-import { initHealingSDK } from './sdk/index';
+import { initHealingSDK, initFrustrationWatcher } from './sdk/index';
 
 initHealingSDK();
+initFrustrationWatcher();
 
 async function bootApp() {
   try {

@@ -1,3 +1,4 @@
 import { setupWorker } from 'msw/browser'
 import { queueHandlers } from './queueHandlers'
-export const worker = setupWorker(...queueHandlers)
+import { demoHandlers } from './demoHandlers'
+export const worker = setupWorker(...queueHandlers, ...demoHandlers)

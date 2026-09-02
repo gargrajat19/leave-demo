@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useLeaveStore } from './store';
+import { reportTelemetry } from './sdk';
 
 export default function LeaveApp() {
   const { formData, updateField, resetForm } = useLeaveStore();
@@ -18,6 +19,7 @@ export default function LeaveApp() {
       });
       const data = await res.json().catch(()=>({}));
       if (res.ok) {
+        reportTelemetry({ module: 'leave', employeeName: formData.employeeName, context: `${formData.leaveType} ${formData.startDate} to ${formData.endDate}`, date: formData.startDate });
         resetForm();
         if (data.viaModal) {
           setFormStatus('idle');

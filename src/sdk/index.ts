@@ -1,35 +1,188 @@
-// Self-healing SDK: intercepts fetch() failures (5xx / network-down) at the point of
-// submission and offers a capture-and-retry recovery UI, so a transient backend/network
-// issue doesn't lose what the user was trying to submit.
-//
-// Deliberately out of scope for this SDK: business decisions like "does this look
-// suspicious" or "does this need manager review." Those are judgment calls that belong to
-// whichever screen actually makes that decision (e.g. a manager's approval queue) — the SDK
-// only ever sees a single in-flight request and has no way to reason about a user's history,
-// so baking that logic in here would be the wrong place to put it.
+import { showToast, injectHealingUI } from './ui';
 
+// ============================================================================
+// Capability 1: Context-aware recovery.
+// A plain retry has no memory — it treats the 1st and 10th failure of the same
+// request identically. This SDK tracks failure history per-endpoint and changes
+// its recommended action once a request keeps failing, instead of blindly
+// suggesting "try again" forever.
+// ============================================================================
+const failureHistory = new Map<string, number[]>();
+const FAILURE_WINDOW_MS = 2 * 60 * 1000;
+
+function recordFailure(url: string) {
+  const arr = failureHistory.get(url) || [];
+  arr.push(Date.now());
+  failureHistory.set(url, arr);
+}
+
+function countRecentFailures(url: string): number {
+  const now = Date.now();
+  const arr = (failureHistory.get(url) || []).filter((t) => now - t <= FAILURE_WINDOW_MS);
+  failureHistory.set(url, arr);
+  return arr.length;
+}
+
+// ============================================================================
+// Capability 2: Predictive degradation.
+// Watches response latency across ALL requests (not just failures) and warns
+// proactively when a clear upward trend appears — before anything has actually
+// timed out. This is the piece that completes "error reporting -> self-
+// diagnosing -> self-healing -> self-preventing": everything else in this SDK
+// reacts to a failure that already happened; this one doesn't wait for that.
+// ============================================================================
+const LATENCY_WINDOW = 6;
+const latencyHistory: number[] = [];
+let degradationWarnedAt = 0;
+const DEGRADATION_COOLDOWN_MS = 30_000;
+
+function trackLatency(elapsedMs: number) {
+  latencyHistory.push(elapsedMs);
+  if (latencyHistory.length > LATENCY_WINDOW) latencyHistory.shift();
+  if (latencyHistory.length < LATENCY_WINDOW) return;
+
+  const half = LATENCY_WINDOW / 2;
+  const earlier = latencyHistory.slice(0, half);
+  const recent = latencyHistory.slice(half);
+  const avgEarlier = earlier.reduce((a, b) => a + b, 0) / earlier.length;
+  const avgRecent = recent.reduce((a, b) => a + b, 0) / recent.length;
+
+  const trendingUp = avgRecent > avgEarlier * 1.6 && avgRecent > 400;
+  const offCooldown = Date.now() - degradationWarnedAt > DEGRADATION_COOLDOWN_MS;
+
+  if (trendingUp && offCooldown) {
+    degradationWarnedAt = Date.now();
+    showToast({
+      icon: '📉',
+      tone: 'warn',
+      title: 'Performance Degradation Detected',
+      message: `Response times have climbed from ~${Math.round(avgEarlier)}ms to ~${Math.round(avgRecent)}ms. Monitoring closely — no failure yet, just flagging the trend early.`,
+    });
+  }
+}
+
+// ============================================================================
+// Capability 3: Silent-failure detection.
+// A request can return HTTP 200 while still being broken inside (an empty or
+// malformed payload from bad backend error handling) — the calling app has no
+// way to know, since from its point of view the request "succeeded." This
+// learns the normal response shape per endpoint and flags a sharp deviation.
+// ============================================================================
+interface ResponseProfile { count: number; avgLength: number; }
+const responseProfiles = new Map<string, ResponseProfile>();
+
+async function checkSilentFailure(url: string, response: Response) {
+  const text = await response.text().catch(() => '');
+  const length = text.length;
+  const profile = responseProfiles.get(url);
+
+  if (!profile) {
+    responseProfiles.set(url, { count: 1, avgLength: length });
+    return;
+  }
+
+  if (profile.count >= 3 && profile.avgLength > 50 && length < profile.avgLength * 0.25) {
+    showToast({
+      icon: '🕵️',
+      tone: 'warn',
+      title: 'Possible Silent Failure',
+      message: `This endpoint usually returns ~${Math.round(profile.avgLength)} bytes of data, but just returned ${length}. It reported success (200), but the payload looks abnormally empty — worth checking.`,
+    });
+    return; // don't fold the anomalous response into the learned baseline
+  }
+
+  responseProfiles.set(url, { count: profile.count + 1, avgLength: (profile.avgLength * profile.count + length) / (profile.count + 1) });
+}
+
+// ============================================================================
+// Capability 4: Frustration detection -> live intervention.
+// Session-replay tools already detect rage-clicks, but only for a human to
+// review later in analytics. This acts on it live, the moment it happens.
+// ============================================================================
+const clickHistory = new Map<Element, number[]>();
+const RAGE_CLICK_WINDOW_MS = 4000;
+const RAGE_CLICK_THRESHOLD = 3;
+const rageWarned = new WeakSet<Element>();
+
+export function initFrustrationWatcher() {
+  document.addEventListener('click', (e) => {
+    const target = (e.target as HTMLElement)?.closest('button, [type="submit"]');
+    if (!target) return;
+    const now = Date.now();
+    const arr = (clickHistory.get(target) || []).filter((t) => now - t <= RAGE_CLICK_WINDOW_MS);
+    arr.push(now);
+    clickHistory.set(target, arr);
+
+    if (arr.length >= RAGE_CLICK_THRESHOLD && !rageWarned.has(target)) {
+      rageWarned.add(target);
+      showToast({
+        icon: '🤔',
+        tone: 'info',
+        title: 'Noticed Repeated Clicks',
+        message: "This doesn't seem to be responding yet. Your last input is safe — no need to keep clicking, we're still working on it.",
+      });
+      setTimeout(() => rageWarned.delete(target), 15_000);
+    }
+  }, true);
+}
+
+// ============================================================================
+// Capability 5: Cross-app correlation via a relay this SDK owns — not via
+// integrating two vendors' backends with each other. Each app instance
+// reports a small amount of telemetry to shared infrastructure the SDK
+// controls; correlation happens there, above both apps, without either app's
+// backend ever needing to know the other one exists.
+// ============================================================================
+export async function reportTelemetry(event: { module: string; employeeName: string; context: string; date?: string }) {
+  try {
+    await fetch('/api/relay/report', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(event),
+    });
+  } catch {
+    // best-effort — telemetry should never block the host app
+  }
+}
+
+// ============================================================================
+// Core: fetch interception, wiring capabilities 1-3 into every request.
+// ============================================================================
 export function initHealingSDK() {
   const originalFetch = window.fetch;
   window.fetch = async (...args) => {
+    const request = args[0] instanceof Request ? args[0] : new Request(args[0], args[1]);
+    const url = request.url;
+    const start = performance.now();
+
     try {
       const response = await originalFetch(...args);
+      trackLatency(performance.now() - start);
+
       if (!response.ok && response.status >= 500) {
-        const request = args[0] instanceof Request ? args[0] : new Request(args[0], args[1]);
+        recordFailure(url);
         const payload = await request.clone().json().catch(() => ({}));
         const retry = () => retryRequest(originalFetch, request);
+        const priorFailures = countRecentFailures(url);
         return new Promise((resolve) => {
-          injectHealingUI(payload, { status: response.status, text: response.statusText }, retry, (customMessage) => {
+          injectHealingUI(payload, { status: response.status, text: response.statusText }, retry, priorFailures, (customMessage) => {
             resolve(new Response(JSON.stringify({ customMessage, viaModal: true }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
           });
         });
       }
+
+      if (response.ok) {
+        checkSilentFailure(url, response.clone());
+      }
+
       return response;
     } catch {
-      const request = args[0] instanceof Request ? args[0] : new Request(args[0], args[1]);
+      recordFailure(url);
       const payload = await request.clone().json().catch(() => ({}));
       const retry = () => retryRequest(originalFetch, request);
+      const priorFailures = countRecentFailures(url);
       return new Promise((resolve) => {
-        injectHealingUI(payload, { status: 'NETWORK_ERROR', text: 'Connection Lost' }, retry, (customMessage) => {
+        injectHealingUI(payload, { status: 'NETWORK_ERROR', text: 'Connection Lost' }, retry, priorFailures, (customMessage) => {
           resolve(new Response(JSON.stringify({ customMessage, viaModal: true }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
         });
       });
@@ -42,108 +195,4 @@ async function retryRequest(originalFetch: typeof window.fetch, request: Request
   headers.set('x-retry', '1');
   const retried = new Request(request, { headers });
   return originalFetch(retried);
-}
-
-function escapeHtml(value: unknown): string {
-  return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-  }[ch] as string));
-}
-
-// Turns any payload field name into a readable label, e.g. "employeeName" -> "Employee Name".
-// This is what lets injectHealingUI render captured data for ANY host app's form shape
-// without the SDK needing to know its fields ahead of time.
-function humanizeKey(key: string): string {
-  const spaced = key.replace(/_/g, ' ').replace(/([a-z0-9])([A-Z])/g, '$1 $2');
-  return spaced.replace(/\b\w/g, (c) => c.toUpperCase()).trim();
-}
-
-interface HealingErrorData {
-  status: number | string;
-  text: string;
-}
-
-function injectHealingUI(
-  payload: Record<string, unknown>,
-  errorData: HealingErrorData,
-  retry: () => Promise<Response>,
-  onComplete: (customMessage: string) => void
-) {
-  if (document.getElementById('sdk-overlay')) return;
-  const host = document.createElement('div');
-  host.id = 'sdk-overlay';
-  Object.assign(host.style, { position: 'fixed', top: '0', left: '0', width: '100vw', height: '100vh', zIndex: '9999', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(2px)' });
-  const shadowRoot = host.attachShadow({ mode: 'open' });
-  let errorTitle = '⚠️ System Offline';
-  let errorDesc = '';
-  if (errorData.status === 'NETWORK_ERROR') { errorTitle = '⚠️ Internet Connection Lost'; errorDesc = "Your device has lost its internet connection, but don't worry — we've captured your request details below."; }
-  else if (errorData.status === 500) { errorTitle = '⚠️ System Database Down'; errorDesc = "The backend database is temporarily down, but don't worry — we've captured your request details below."; }
-  else if (errorData.status === 503) { errorTitle = '⚠️ High Traffic Volume'; errorDesc = "The system is receiving too many requests, but don't worry — we've captured your request details below."; }
-  else if (errorData.status === 504) { errorTitle = '⚠️ Server Timeout'; errorDesc = "The server is taking too long to respond, but don't worry — we've captured your request details below."; }
-
-  const rows: [string, string][] = Object.entries(payload).map(
-    ([key, value]) => [humanizeKey(key), value === undefined || value === null || value === '' ? '—' : String(value)]
-  );
-  const capturedRowsHtml = rows.map(([label, value]) =>
-    `<div class="row"><span class="row-label">${escapeHtml(label)}</span><span class="row-value">${escapeHtml(value)}</span></div>`
-  ).join('');
-
-  shadowRoot.innerHTML = `<style>
-    .modal{background:white;padding:32px;border-radius:12px;width:460px;box-shadow:0 10px 25px rgba(0,0,0,0.2);font-family:sans-serif}
-    .title{color:#dc2626;font-size:18px;font-weight:bold;margin-bottom:8px;display:flex;align-items:center;gap:8px}
-    .title.success-state{color:#16a34a}
-    .subtitle{color:#4b5563;font-size:14px;margin-bottom:16px;line-height:1.5}
-    .captured{background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:12px 14px;margin-bottom:20px}
-    .captured-label{font-size:11px;text-transform:uppercase;letter-spacing:0.05em;color:#6b7280;font-weight:bold;margin-bottom:8px}
-    .row{display:flex;justify-content:space-between;gap:12px;font-size:13px;padding:4px 0;border-bottom:1px solid #eef0f2}
-    .row:last-child{border-bottom:none}
-    .row-label{color:#6b7280}
-    .row-value{color:#111827;font-weight:600;text-align:right}
-    .btn{background:#2563eb;color:white;border:none;padding:12px;border-radius:6px;cursor:pointer;width:100%;font-weight:600;font-size:15px}
-    .btn:disabled{opacity:0.7;cursor:default}
-    .btn.success{background:#16a34a}
-  </style>
-    <div class="modal">
-      <div class="title" id="m-title">${errorTitle}</div>
-      <div class="subtitle" id="m-subtitle">${errorDesc}</div>
-      <div class="captured">
-        <div class="captured-label">Captured Request Details</div>
-        ${capturedRowsHtml}
-      </div>
-      <button class="btn" id="retry-btn">Retry Submission</button>
-    </div>
-  `;
-  document.body.appendChild(host);
-  const titleBox = shadowRoot.getElementById('m-title') as HTMLElement | null;
-  const subtitleBox = shadowRoot.getElementById('m-subtitle') as HTMLElement | null;
-  const retryBtn = shadowRoot.getElementById('retry-btn') as HTMLButtonElement | null;
-  if (!titleBox || !subtitleBox || !retryBtn) return;
-
-  retryBtn.addEventListener('click', async () => {
-    retryBtn.disabled = true;
-    retryBtn.innerText = 'Retrying...';
-    try {
-      const res = await retry();
-      const data = await res.json().catch(() => ({}));
-      if (res.ok) {
-        const successMessage: string = data.customMessage || 'Request submitted successfully.';
-        titleBox.innerText = '✅ Success';
-        titleBox.classList.add('success-state');
-        subtitleBox.innerText = successMessage;
-        retryBtn.innerText = 'Close';
-        retryBtn.disabled = false;
-        retryBtn.classList.add('success');
-        retryBtn.addEventListener('click', () => {
-          host.remove();
-          onComplete(successMessage);
-        }, { once: true });
-        return;
-      }
-      throw new Error('Retry failed');
-    } catch {
-      retryBtn.disabled = false;
-      retryBtn.innerText = 'Retry Submission';
-      subtitleBox.innerText = 'Still having trouble — please try again.';
-    }
-  });
 }

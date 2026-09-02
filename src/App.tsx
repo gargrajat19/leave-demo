@@ -2,8 +2,9 @@ import { useState } from 'react';
 import LeaveApp from './LeaveApp';
 import ExpenseApp from './ExpenseApp';
 import ManagerQueue from './ManagerQueue';
+import SdkConsole from './SdkConsole';
 
-type Tab = 'leave' | 'expense' | 'queue';
+type Tab = 'leave' | 'expense' | 'queue' | 'sdk';
 
 export default function App() {
   const [tab, setTab] = useState<Tab>('leave');
@@ -12,6 +13,7 @@ export default function App() {
     { id: 'leave', label: 'Leave Module' },
     { id: 'expense', label: 'Expense Module' },
     { id: 'queue', label: 'Manager Queue' },
+    { id: 'sdk', label: 'AI Co-Pilot Console' },
   ];
 
   return (
@@ -30,6 +32,7 @@ export default function App() {
       {tab === 'leave' && <LeaveApp />}
       {tab === 'expense' && <ExpenseApp />}
       {tab === 'queue' && <ManagerQueue />}
+      {tab === 'sdk' && <SdkConsole />}
     </div>
   );
 }
